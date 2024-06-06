@@ -1,0 +1,340 @@
+---
+title: "Generalized k-means"
+author: "THUO Menghor &"
+date: "2023-12-03"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(cowplot) # required to arrange multiple plots in a grid
+theme_set(theme_bw(base_size=12)) # set default ggplot2 theme
+library(dplyr)
+library(grid) # required to draw arrows
+rm(list=ls())
+library(stats) # For dist and runif
+library(geosphere) # For distm
+```
+# Orthogonal Projection
+
+- Orthogonal projection onto a Line
+
+Given a line in \( \mathbf{D} \) in \( \mathbb{R}^p \) defined by a point
+\( \mathbf{a} \) on the line and a direction vector \( \mathbf{v} \), and a point
+\( \mathbf{x} \) in \( \mathbb{R}^p \) on \( \mathbf{D} \) is given by: 
+$$
+\mathbf{y} = \mathbf{a} + \frac{(\mathbf{x} - \mathbf{a}) \cdot \mathbf{v}}{\mathbf{v} \cdot \mathbf{v}} \mathbf{v}
+$$
+- Distance Between a Point and a Line
+$$
+d = \| \mathbf{x} - \mathbf{y} \|
+$$
+Now, we associate computer code that gives the coordinates of the orthogonal project of \(\mathbf{x}\) onto \(\mathbf{D}\) in the following.
+```{r}
+# Function to compute orthogonal projection and distance
+project_onto_line <- function(x, a, v) {
+  v_norm = v / sqrt(sum(v * v))
+  projection = a + sum((x - a) * v_norm) * v_norm
+  distance = sqrt(sum((x - projection) ^ 2))
+  return(list(projection = projection, distance = distance))
+}
+# Example point and line
+x <- c(1, 2) # The actual coordinates of x
+A <- c(0, 0) # A point on the line D
+v <- c(1, 1) # The direction vector of line D
+
+# Compute the orthogonal projection and distance
+result <- project_onto_line(x, A, v)
+cat("The orthogonal projection of x onto D is:", result$projection, "\n")
+cat("The distance from x to D is:", result$distance, "\n")
+
+```
+```{r}
+point_to_line_dist <- function(point, line_point, line_dir) {
+  diff <- point - line_point
+  proj <- sum(diff * line_dir) * line_dir
+  distance <- (sqrt(sum((diff - proj)^2)))
+  result <- list(projection = proj, distance = distance)
+  return(result)
+}
+# Example point and line
+x <- c(1, 2) # The actual coordinates of x
+A <- c(0, 0) # A point on the line D
+v <- c(1, 1) # The direction vector of line D
+
+# Compute the orthogonal projection and distance
+result <- point_to_line_dist(x, A, v)
+cat("The orthogonal projection of x onto D is:", result$projection, "\n")
+cat("The distance from x to D is:", result$distance, "\n")
+```
+
+```{r}
+# Function to find the closest line
+find_closest_line <- function(x, lines) {
+  distances = sapply(lines, function(line) project_onto_line(x, line$a, line$v)$distance)
+  closest_indices = which(distances == min(distances))
+  if (length(closest_indices) > 1) {
+    return(sample(closest_indices, 1))
+  } else {
+    return(closest_indices)
+  }
+}
+
+# Define lines (each line has 'a' and 'v')
+lines = list(
+  list(a = c(0, 0), v = c(1, 0)),
+  list(a = c(1, 1), v = c(2, 1)),
+  list(a = c(1, 2), v = c(2, 1)),
+  list(a = c(1, 1), v = c(0, 1))
+)
+# Find the closest line to x
+closest_line_index = find_closest_line(x, lines)
+print(paste("Closest line index:", closest_line_index))
+```
+# Dynamic Clouds or Generalized k-means
+## Initialization
+- We choose k lines \( \mathbf{D_1, D_2, ... ,D_k } \) are choosen instand of choosing k points as initial centroids. These can be initialized randomly.
+```{r }
+# This function initializes k random lines from the dataset
+initialize_lines <- function(data, k) {
+  lines <- lapply(1:k, function(i) {
+    indices <- sample(nrow(data), 2)
+    p1 <- data[indices[1], ]
+    p2 <- data[indices[2], ]
+    direction <- p2 - p1
+    list(point = p1, direction = direction)
+  })
+  lines
+}
+```
+
+## Assignment
+- Each point in the dataset is assinged to the line to which it has the shortest distance based on orthogonal projection. This means for each point \( \mathbf{x_i} \), you calculate \( \mathbf{d^2(x_i, D_k)} \) for all k lines and assign \( \mathbf{x_i} \) to the line with the smallest distance.
+
+```{r}
+# Function to calculate the orthogonal projection of a point onto a line
+orthogonal_projection <- function(point, line) {
+  v <- line$direction
+  u <- point - line$point
+  proj_of_u_on_v <- sum(u * v) / sum(v^2) * v
+  line$point + proj_of_u_on_v
+}
+# Function to calculate squared distance from point to line
+squared_distance_to_line <- function(point, line) {
+  proj <- orthogonal_projection(point, line)
+  sum((point - proj)^2)
+}
+```
+## Update
+- After all points have been assigned to lines, the lines are updated. This cound involve techniques such as Principal Component Ananlysis(PCA) to find the best-fitting line through the points assinged to each line
+```{r}
+generalized_kmeans <- function(data, k, max_iter = 100) {
+  # Initialize k lines
+  lines <- initialize_lines(data, k)
+  
+  # Initialize clusters
+  clusters <- rep(0, nrow(data))
+  
+  for (i in 1:max_iter) {
+    clusters_old <- clusters
+    
+    # Assignment step
+    for (j in 1:nrow(data)) {
+      distances <- sapply(lines, function(line) squared_distance_to_line(data[j, ], line))
+      clusters[j] <- which.min(distances)
+    }
+    
+    # Update step
+    for (j in 1:k) {
+      points_in_cluster <- data[clusters == j, ]
+      if (nrow(points_in_cluster) > 1) {
+        #determine the direction of the line by PCA
+        pca_res <- prcomp(points_in_cluster)
+        lines[[j]]$point <- pca_res$center
+        lines[[j]]$direction <- pca_res$rotation[,1]
+      }
+    }
+  }
+  
+  return(clusters)
+}
+```
+
+```{r}
+data(iris)
+iris_data <- iris[, 1:4]
+summary(iris_data)
+```
+```{r}
+compare <- function(tclust, clust){
+  # Return the percentage of error made by the clustering
+  err <- 0
+  n <- length(tclust)
+  for (i in 1:n) {
+    err <- err + as.numeric(tclust[i]!=clust[i])
+  }
+  return(err/n*100)
+}
+```
+```{r}
+# In that case, we choose 3 particular objects, that were regularly near the centers of K-means algorithm
+iris_clust <- function(clust) {
+  clust[clust==clust[38]] <- rep("setosa", times = length(clust[clust==clust[38]]))
+  clust[clust==clust[54]] <- rep("versicolor", times = length(clust[clust==clust[54]]))
+  clust[clust==clust[101]] <- rep("virginica", times = length(clust[clust==clust[101]]))
+  return(clust)
+}
+```
+
+
+### true partition
+
+```{r}
+# We plot the true clustering.
+Petel <- ggplot(iris, aes(x = Petal.Length, y = Petal.Width, color = Species)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) + ggtitle("True partition")
+
+Sepal <- ggplot(iris, aes(x = Sepal.Length, y = Sepal.Width, color = Species)) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("darkorange", "darkblue", "forestgreen"))
+plot_grid(Petel,Sepal, labels = "AUTO")
+```
+
+### G_kmeans
+```{r}
+# Perform Generalized k-means clustering
+set.seed(123) # For reproducibility
+clusters <- generalized_kmeans(iris_data, k = 3)
+
+# Data with clusters
+iris_data_with_clusters <- cbind(iris_data, G_kmeans = as.factor(clusters))
+
+# Plot for Sepal.Length and Sepal.Width
+sepal_plot <- ggplot(iris_data_with_clusters, aes(x = Sepal.Length, y = Sepal.Width, color = G_kmeans)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("Generalized k-means")
+
+# Plot for Petal.Length and Petal.Width
+petal_plot <- ggplot(iris_data_with_clusters, aes(x = Petal.Length, y = Petal.Width, color = G_kmeans)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("Generalized k-means")
+
+# Combine plots
+plot_grid(sepal_plot, petal_plot, labels = "AUTO")
+```
+```{r}
+# Apply k-means
+km_clusters <- kmeans(iris_data, centers = 3, nstart = 25)$cluster
+K_means <- as.factor(km_clusters)
+
+sepal_kmeans_plot <- ggplot(iris_data, aes(x = Sepal.Length, y = Sepal.Width, color = K_means)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("K-means")
+
+petal_kmeans_plot <- ggplot(iris_data, aes(x = Petal.Length, y = Petal.Width, color = K_means)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("K-means")
+
+plot_grid(sepal_kmeans_plot, petal_kmeans_plot, labels = "AUTO")
+```
+```{r}
+library(mclust)
+# Apply Gaussian Mixture Model
+gmm <- Mclust(iris_data)
+gmm_clusters <- gmm$classification
+gmm <- as.factor(gmm_clusters)
+
+sepal_gmm<- ggplot(iris_data, aes(x = Sepal.Length, y = Sepal.Width, color = gmm)) + geom_point(size = 2) + scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("GMM")
+
+petal_gmm <- ggplot(iris_data, aes(x = Petal.Length, y = Petal.Width, color = gmm)) + geom_point(size = 2) + scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    ggtitle("GMM")
+plot_grid(sepal_gmm, petal_gmm, labels = "AUTO")
+```
+
+
+```{r}
+# Perform PCA on the dataset to reduce to 2 principal components
+pca_result <- prcomp(iris_data, scale. = TRUE)
+pca_data <- as.data.frame(pca_result$x[, 1:2])
+# Combine PCA results with cluster assignments
+pca_data$cluster <- as.factor(clusters)
+# Create the plot
+p <- ggplot(pca_data, aes(x = PC1, y = PC2, color = cluster)) +
+    geom_point(size = 2) +
+  scale_color_manual(values = c("darkorange", "darkblue", "forestgreen")) +
+    labs(title = "Cluster Visualization with PCA", 
+         x = "Principal Component 1", 
+         y = "Principal Component 2", 
+         color = "Cluster")
+
+# Print the plot
+print(p)
+```
+
+```{r}
+library(ggplot2)
+library(stats)
+library(gridExtra)
+
+# Ensure the Generalized k-means algorithm implementation (generalized_kmeans) is available here
+
+# Simulate data better suited for Generalized k-means
+set.seed(123)
+n <- 300
+t <- runif(n, min=0, max=2*pi)
+x <- c(t, 2*t) + rnorm(2*n, sd=0.2)
+y <- c(t, -2*t) + rnorm(2*n, sd=0.2)
+simulated_data <- data.frame(x=x, y=y)
+
+# Apply Generalized k-means
+gk_clusters <- generalized_kmeans(simulated_data, k = 2)
+
+# Apply standard k-means
+km_clusters <- kmeans(simulated_data, centers = 2, nstart = 25)$cluster
+
+# PCA for visualization
+pca_result <- prcomp(simulated_data)
+pca_data <- data.frame(pca_result$x[, 1:2])
+pca_data$gk_clusters <- as.factor(gk_clusters)
+pca_data$km_clusters <- as.factor(km_clusters)
+
+# Visualization function
+visualize_clusters <- function(pca_data, clusters_column, title) {
+  ggplot(pca_data, aes(PC1, PC2, color = get(clusters_column))) +
+    geom_point(alpha = 0.6, size = 2) +
+    scale_color_manual(values = c("red", "blue")) +
+    labs(title = title, color = "Cluster") +
+    theme_minimal()
+}
+
+# Plots
+gk_plot <- visualize_clusters(pca_data, "gk_clusters", "Generalized K-Means Clustering")
+km_plot <- visualize_clusters(pca_data, "km_clusters", "K-Means Clustering")
+
+# Arrange plots in a grid
+grid.arrange(gk_plot, km_plot, nrow = 1)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
